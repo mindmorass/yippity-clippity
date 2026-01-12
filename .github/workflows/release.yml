@@ -27,7 +27,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Import Code Signing Certificate
-        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' }}
+        if: ${{ secrets.APPLE_CERTIFICATE_BASE64 != '' }}
         env:
           APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -84,11 +84,11 @@ jobs:
             dist/Yippity-Clippity.app/Contents/Info.plist || true
 
       - name: Sign App Bundle
-        if: ${{ env.APPLE_DEVELOPER_ID != '' }}
+        if: ${{ secrets.APPLE_DEVELOPER_ID != '' }}
         env:
           APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
         run: |
-          # Sign with hardened runtime (required for distribution)
+          # Sign with hardened runtime (required for notarization)
           codesign --force --deep --sign "$APPLE_DEVELOPER_ID" \
             --options runtime \
             --entitlements entitlements/entitlements.plist \
@@ -96,7 +96,36 @@ jobs:
 
           # Verify signature
           codesign --verify --verbose=2 dist/Yippity-Clippity.app
-          echo "App signed successfully (not notarized - users will need to right-click > Open on first launch)"
+          echo "App signed successfully"
+
+      - name: Notarize App Bundle
+        if: ${{ secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Create zip for notarization submission
+          ditto -c -k --keepParent dist/Yippity-Clippity.app dist/notarize.zip
+
+          # Submit for notarization and wait for completion
+          echo "Submitting app for notarization..."
+          xcrun notarytool submit dist/notarize.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+          # Staple the notarization ticket to the app
+          echo "Stapling notarization ticket..."
+          xcrun stapler staple dist/Yippity-Clippity.app
+
+          # Verify notarization
+          xcrun stapler validate dist/Yippity-Clippity.app
+          echo "App notarized and stapled successfully"
+
+          # Clean up
+          rm -f dist/notarize.zip
 
       - name: Create Release Archive
         run: |
