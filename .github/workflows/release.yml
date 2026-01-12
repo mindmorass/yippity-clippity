@@ -12,7 +12,7 @@ env:
   GO_VERSION: '1.23'
 
 jobs:
-  build-and-sign:
+  build:
     runs-on: macos-14
 
     steps:
@@ -25,31 +25,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
-
-      - name: Import Code Signing Certificate
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          # Create temporary keychain
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
-
-          # Import certificate (with cleanup on failure)
-          CERT_FILE=$(mktemp)
-          trap "rm -f $CERT_FILE" EXIT
-          echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERT_FILE"
-          security import "$CERT_FILE" -P "$CERTIFICATE_PASSWORD" \
-            -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
-          rm -f "$CERT_FILE"
-          security list-keychain -d user -s $KEYCHAIN_PATH
-
-          # Allow codesign to access keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
 
       - name: Build binary
         env:
@@ -79,48 +54,7 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" \
             dist/Yippity-Clippity.app/Contents/Info.plist || true
 
-      - name: Sign App Bundle with Hardened Runtime
-        env:
-          DEVELOPER_ID: ${{ secrets.MACOS_DEVELOPER_ID }}
-        run: |
-          # Sign the binary first
-          codesign --force --deep --sign "$DEVELOPER_ID" \
-            --options runtime \
-            --entitlements entitlements/entitlements.plist \
-            dist/Yippity-Clippity.app/Contents/MacOS/yippity-clippity
-
-          # Sign the app bundle
-          codesign --force --deep --sign "$DEVELOPER_ID" \
-            --options runtime \
-            --entitlements entitlements/entitlements.plist \
-            dist/Yippity-Clippity.app
-
-          # Verify signature
-          codesign --verify --verbose=4 dist/Yippity-Clippity.app
-
-      - name: Notarize App Bundle
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-        run: |
-          VERSION=${{ github.ref_name }}
-
-          # Create zip for notarization
-          ditto -c -k --keepParent dist/Yippity-Clippity.app dist/Yippity-Clippity.zip
-
-          # Submit for notarization
-          xcrun notarytool submit dist/Yippity-Clippity.zip \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APPLE_APP_PASSWORD" \
-            --wait
-
-          # Staple the notarization ticket to the app
-          xcrun stapler staple dist/Yippity-Clippity.app
-
-          # Re-create zip with stapled app for release
-          rm dist/Yippity-Clippity.zip
+          # Create zip for release
           ditto -c -k --keepParent dist/Yippity-Clippity.app dist/Yippity-Clippity-${VERSION}.zip
 
       - name: Create Release
