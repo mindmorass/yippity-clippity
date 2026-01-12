@@ -108,7 +108,7 @@ func createClipboardIcon() []byte {
 	}
 
 	var buf bytes.Buffer
-	png.Encode(&buf, img)
+	_ = png.Encode(&buf, img)
 	return buf.Bytes()
 }
 
