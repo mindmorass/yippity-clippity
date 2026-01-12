@@ -15,7 +15,7 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
 
 	// Create and run application
-	application, err := app.New()
+	application, err := app.New(Version)
 	if err != nil {
 		log.Fatalf("Failed to create application: %v", err)
 		os.Exit(1)

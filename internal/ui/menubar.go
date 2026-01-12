@@ -6,10 +6,14 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"log"
+	"os/exec"
+	"runtime"
 	"time"
 
 	"fyne.io/systray"
 	"github.com/mindmorass/yippity-clippity/internal/sync"
+	"github.com/mindmorass/yippity-clippity/internal/update"
 )
 
 // App interface for the main application
@@ -17,19 +21,25 @@ type App interface {
 	GetSyncEngine() *sync.Engine
 	SetSharedLocation(path string) error
 	GetSharedLocation() string
+	GetVersion() string
+	GetUpdateChecker() *update.Checker
 	Quit()
 }
 
 // Menubar manages the system tray
 type Menubar struct {
-	app         App
-	mStatus     *systray.MenuItem
-	mLastSync   *systray.MenuItem
-	mPause      *systray.MenuItem
-	mResume     *systray.MenuItem
-	mLocations  *systray.MenuItem
-	mCurrentLoc *systray.MenuItem
-	quitChan    chan struct{}
+	app            App
+	mStatus        *systray.MenuItem
+	mLastSync      *systray.MenuItem
+	mPause         *systray.MenuItem
+	mResume        *systray.MenuItem
+	mLocations     *systray.MenuItem
+	mCurrentLoc    *systray.MenuItem
+	mUpdate        *systray.MenuItem
+	mCheckUpdate   *systray.MenuItem
+	mVersion       *systray.MenuItem
+	updateInfo     *update.UpdateInfo
+	quitChan       chan struct{}
 }
 
 // createClipboardIcon generates a simple clipboard icon for the menubar
@@ -122,6 +132,15 @@ func (m *Menubar) onReady() {
 
 	systray.AddSeparator()
 
+	// Update section
+	m.mUpdate = systray.AddMenuItem("Update Available!", "A new version is available")
+	m.mUpdate.Hide() // Hidden until update is found
+	m.mCheckUpdate = systray.AddMenuItem("Check for Updates", "")
+	m.mVersion = systray.AddMenuItem("Version: "+m.app.GetVersion(), "")
+	m.mVersion.Disable()
+
+	systray.AddSeparator()
+
 	// About and Quit
 	mAbout := systray.AddMenuItem("About Yippity-Clippity", "")
 	mQuit := systray.AddMenuItem("Quit", "")
@@ -137,6 +156,10 @@ func (m *Menubar) onReady() {
 
 	// Start last sync time updater
 	go m.updateLastSyncLoop()
+
+	// Check for updates on startup and periodically
+	go m.checkForUpdates()
+	go m.updateCheckLoop()
 
 	// Handle menu events
 	go func() {
@@ -161,6 +184,15 @@ func (m *Menubar) onReady() {
 				m.app.GetSyncEngine().Resume()
 				m.mResume.Hide()
 				m.mPause.Show()
+
+			case <-m.mCheckUpdate.ClickedCh:
+				m.checkForUpdates()
+
+			case <-m.mUpdate.ClickedCh:
+				// Open release page in browser
+				if m.updateInfo != nil && m.updateInfo.ReleaseURL != "" {
+					openBrowser(m.updateInfo.ReleaseURL)
+				}
 
 			case <-mAbout.ClickedCh:
 				// TODO: Show about dialog
@@ -230,5 +262,64 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%d minutes", int(d.Minutes()))
 	} else {
 		return fmt.Sprintf("%d hours", int(d.Hours()))
+	}
+}
+
+func (m *Menubar) checkForUpdates() {
+	checker := m.app.GetUpdateChecker()
+	if checker == nil {
+		return
+	}
+
+	info, err := checker.Check()
+	if err != nil {
+		log.Printf("Update check failed: %v", err)
+		return
+	}
+
+	m.updateInfo = info
+
+	if info.Available {
+		m.mUpdate.SetTitle(fmt.Sprintf("Update Available: %s", info.LatestVersion))
+		m.mUpdate.Show()
+		log.Printf("Update available: %s -> %s", info.CurrentVersion, info.LatestVersion)
+	} else {
+		m.mUpdate.Hide()
+	}
+}
+
+func (m *Menubar) updateCheckLoop() {
+	// Initial delay before first check
+	time.Sleep(5 * time.Second)
+	m.checkForUpdates()
+
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			m.checkForUpdates()
+		case <-m.quitChan:
+			return
+		}
+	}
+}
+
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		log.Printf("Unsupported platform for opening browser")
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		log.Printf("Failed to open browser: %v", err)
 	}
 }

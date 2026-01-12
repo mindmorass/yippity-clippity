@@ -5,18 +5,21 @@ import (
 
 	"github.com/mindmorass/yippity-clippity/internal/sync"
 	"github.com/mindmorass/yippity-clippity/internal/ui"
+	"github.com/mindmorass/yippity-clippity/internal/update"
 )
 
 // App is the main application
 type App struct {
-	config     *Config
-	syncEngine *sync.Engine
-	menubar    *ui.Menubar
-	quitChan   chan struct{}
+	config        *Config
+	syncEngine    *sync.Engine
+	menubar       *ui.Menubar
+	updateChecker *update.Checker
+	version       string
+	quitChan      chan struct{}
 }
 
 // New creates a new application instance
-func New() (*App, error) {
+func New(version string) (*App, error) {
 	// Load configuration
 	config, err := LoadConfig()
 	if err != nil {
@@ -27,10 +30,15 @@ func New() (*App, error) {
 	// Create sync engine
 	engine := sync.NewEngine(config.SharedLocation)
 
+	// Create update checker
+	checker := update.NewChecker(version)
+
 	app := &App{
-		config:     config,
-		syncEngine: engine,
-		quitChan:   make(chan struct{}),
+		config:        config,
+		syncEngine:    engine,
+		updateChecker: checker,
+		version:       version,
+		quitChan:      make(chan struct{}),
 	}
 
 	// Create menubar
@@ -82,4 +90,14 @@ func (a *App) Quit() {
 	a.syncEngine.Stop()
 	a.menubar.Quit()
 	close(a.quitChan)
+}
+
+// GetVersion returns the application version
+func (a *App) GetVersion() string {
+	return a.version
+}
+
+// GetUpdateChecker returns the update checker
+func (a *App) GetUpdateChecker() *update.Checker {
+	return a.updateChecker
 }
