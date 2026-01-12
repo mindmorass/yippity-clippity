@@ -42,70 +42,55 @@ type Menubar struct {
 	quitChan       chan struct{}
 }
 
-// createClipboardIcon generates a clipboard icon for the menubar (template style)
+// createClipboardIcon generates a line-style clipboard icon for the menubar
+// Uses outline style (not filled) for a clean, modern look
 func createClipboardIcon() []byte {
 	const size = 22
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
-	// Template icon: black shapes on transparent background
-	// macOS will automatically adjust for light/dark mode
+	// Template icon: black lines on transparent background
+	// macOS will automatically invert for dark menu bar
 	black := color.RGBA{0, 0, 0, 255}
 
-	// Helper to draw rounded rectangle
-	drawRoundedRect := func(x1, y1, x2, y2, radius int) {
-		for x := x1; x <= x2; x++ {
+	// Helper to draw a line
+	drawLine := func(x1, y1, x2, y2 int) {
+		if x1 == x2 {
+			// Vertical line
 			for y := y1; y <= y2; y++ {
-				// Skip corners for rounded effect
-				inCorner := false
-				if x < x1+radius && y < y1+radius {
-					// Top-left corner
-					dx, dy := x1+radius-x, y1+radius-y
-					inCorner = dx*dx+dy*dy > radius*radius
-				} else if x > x2-radius && y < y1+radius {
-					// Top-right corner
-					dx, dy := x-(x2-radius), y1+radius-y
-					inCorner = dx*dx+dy*dy > radius*radius
-				} else if x < x1+radius && y > y2-radius {
-					// Bottom-left corner
-					dx, dy := x1+radius-x, y-(y2-radius)
-					inCorner = dx*dx+dy*dy > radius*radius
-				} else if x > x2-radius && y > y2-radius {
-					// Bottom-right corner
-					dx, dy := x-(x2-radius), y-(y2-radius)
-					inCorner = dx*dx+dy*dy > radius*radius
-				}
-				if !inCorner {
-					img.Set(x, y, black)
-				}
+				img.Set(x1, y, black)
+			}
+		} else {
+			// Horizontal line
+			for x := x1; x <= x2; x++ {
+				img.Set(x, y1, black)
 			}
 		}
 	}
 
-	// Clipboard body with rounded corners
-	drawRoundedRect(4, 5, 17, 20, 2)
+	// Clipboard body outline (rectangle)
+	// Left edge
+	drawLine(4, 6, 4, 20)
+	// Right edge
+	drawLine(17, 6, 17, 20)
+	// Bottom edge
+	drawLine(4, 20, 17, 20)
+	// Top edge (with gap for clip)
+	drawLine(4, 6, 7, 6)
+	drawLine(14, 6, 17, 6)
 
-	// Clipboard clip at top (centered tab)
-	for x := 8; x <= 13; x++ {
-		for y := 2; y <= 6; y++ {
-			img.Set(x, y, black)
-		}
-	}
+	// Clipboard clip at top
+	// Clip body outline
+	drawLine(7, 3, 14, 3)   // Top of clip
+	drawLine(7, 3, 7, 6)    // Left side of clip
+	drawLine(14, 3, 14, 6)  // Right side of clip
+	// Inner clip detail (the grip hole)
+	drawLine(9, 4, 12, 4)
+	drawLine(9, 5, 12, 5)
 
-	// Clip hole (transparent circle in the clip)
-	transparent := color.RGBA{0, 0, 0, 0}
-	for x := 9; x <= 12; x++ {
-		for y := 3; y <= 4; y++ {
-			img.Set(x, y, transparent)
-		}
-	}
-
-	// Content lines (lighter/thinner to show "paper")
-	lineColor := color.RGBA{0, 0, 0, 180}
-	for x := 6; x <= 15; x++ {
-		img.Set(x, 10, lineColor)
-		img.Set(x, 13, lineColor)
-		img.Set(x, 16, lineColor)
-	}
+	// Content lines (horizontal lines representing text)
+	drawLine(6, 10, 15, 10)
+	drawLine(6, 13, 15, 13)
+	drawLine(6, 16, 12, 16) // Shorter line for variety
 
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
@@ -131,7 +116,8 @@ func (m *Menubar) Quit() {
 }
 
 func (m *Menubar) onReady() {
-	systray.SetIcon(createClipboardIcon())
+	iconData := createClipboardIcon()
+	systray.SetTemplateIcon(iconData, iconData)
 	systray.SetTitle("")
 	systray.SetTooltip("Yippity-Clippity")
 
