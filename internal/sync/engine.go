@@ -64,8 +64,8 @@ func NewEngine(basePath string) *Engine {
 
 	e := &Engine{
 		storage:          stor,
-		clipboardMonitor: clipboard.NewMonitor(250 * time.Millisecond),
-		remoteWatcher:    NewWatcher(stor, 2*time.Second),
+		clipboardMonitor: clipboard.NewMonitor(100 * time.Millisecond),
+		remoteWatcher:    NewWatcher(stor, 500*time.Millisecond),
 		status:           StatusIdle,
 	}
 
