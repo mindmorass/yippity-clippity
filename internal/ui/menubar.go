@@ -42,41 +42,69 @@ type Menubar struct {
 	quitChan       chan struct{}
 }
 
-// createClipboardIcon generates a simple clipboard icon for the menubar
+// createClipboardIcon generates a clipboard icon for the menubar (template style)
 func createClipboardIcon() []byte {
 	const size = 22
 	img := image.NewRGBA(image.Rect(0, 0, size, size))
 
-	// Draw clipboard shape (black on transparent for template icon)
+	// Template icon: black shapes on transparent background
+	// macOS will automatically adjust for light/dark mode
 	black := color.RGBA{0, 0, 0, 255}
 
-	// Clipboard body (rectangle)
-	for x := 4; x < 18; x++ {
-		for y := 5; y < 20; y++ {
-			// Border
-			if x == 4 || x == 17 || y == 5 || y == 19 {
-				img.Set(x, y, black)
+	// Helper to draw rounded rectangle
+	drawRoundedRect := func(x1, y1, x2, y2, radius int) {
+		for x := x1; x <= x2; x++ {
+			for y := y1; y <= y2; y++ {
+				// Skip corners for rounded effect
+				inCorner := false
+				if x < x1+radius && y < y1+radius {
+					// Top-left corner
+					dx, dy := x1+radius-x, y1+radius-y
+					inCorner = dx*dx+dy*dy > radius*radius
+				} else if x > x2-radius && y < y1+radius {
+					// Top-right corner
+					dx, dy := x-(x2-radius), y1+radius-y
+					inCorner = dx*dx+dy*dy > radius*radius
+				} else if x < x1+radius && y > y2-radius {
+					// Bottom-left corner
+					dx, dy := x1+radius-x, y-(y2-radius)
+					inCorner = dx*dx+dy*dy > radius*radius
+				} else if x > x2-radius && y > y2-radius {
+					// Bottom-right corner
+					dx, dy := x-(x2-radius), y-(y2-radius)
+					inCorner = dx*dx+dy*dy > radius*radius
+				}
+				if !inCorner {
+					img.Set(x, y, black)
+				}
 			}
 		}
 	}
 
-	// Clipboard clip at top
-	for x := 8; x < 14; x++ {
-		img.Set(x, 3, black)
-		img.Set(x, 4, black)
-		img.Set(x, 5, black)
-	}
-	// Clip sides
-	img.Set(7, 4, black)
-	img.Set(7, 5, black)
-	img.Set(14, 4, black)
-	img.Set(14, 5, black)
+	// Clipboard body with rounded corners
+	drawRoundedRect(4, 5, 17, 20, 2)
 
-	// Lines on clipboard (content)
-	for x := 6; x < 16; x++ {
-		img.Set(x, 9, black)
-		img.Set(x, 12, black)
-		img.Set(x, 15, black)
+	// Clipboard clip at top (centered tab)
+	for x := 8; x <= 13; x++ {
+		for y := 2; y <= 6; y++ {
+			img.Set(x, y, black)
+		}
+	}
+
+	// Clip hole (transparent circle in the clip)
+	transparent := color.RGBA{0, 0, 0, 0}
+	for x := 9; x <= 12; x++ {
+		for y := 3; y <= 4; y++ {
+			img.Set(x, y, transparent)
+		}
+	}
+
+	// Content lines (lighter/thinner to show "paper")
+	lineColor := color.RGBA{0, 0, 0, 180}
+	for x := 6; x <= 15; x++ {
+		img.Set(x, 10, lineColor)
+		img.Set(x, 13, lineColor)
+		img.Set(x, 16, lineColor)
 	}
 
 	var buf bytes.Buffer
