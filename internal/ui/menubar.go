@@ -302,6 +302,15 @@ func (m *Menubar) checkForUpdates() {
 	info, err := checker.Check()
 	if err != nil {
 		log.Printf("Update check failed: %v", err)
+		m.mUpdate.SetTitle("Update check failed")
+		m.mUpdate.Show()
+		// Hide the error after a few seconds
+		go func() {
+			time.Sleep(3 * time.Second)
+			if m.updateInfo == nil || !m.updateInfo.Available {
+				m.mUpdate.Hide()
+			}
+		}()
 		return
 	}
 
@@ -312,7 +321,15 @@ func (m *Menubar) checkForUpdates() {
 		m.mUpdate.Show()
 		log.Printf("Update available: %s -> %s", info.CurrentVersion, info.LatestVersion)
 	} else {
-		m.mUpdate.Hide()
+		// Show "up to date" briefly so user knows the check completed
+		m.mUpdate.SetTitle("Up to date ✓")
+		m.mUpdate.Show()
+		go func() {
+			time.Sleep(3 * time.Second)
+			if m.updateInfo != nil && !m.updateInfo.Available {
+				m.mUpdate.Hide()
+			}
+		}()
 	}
 }
 
