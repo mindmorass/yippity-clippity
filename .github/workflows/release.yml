@@ -26,6 +26,35 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      - name: Import Code Signing Certificate
+        if: ${{ env.APPLE_CERTIFICATE_BASE64 != '' }}
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import certificate
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > $RUNNER_TEMP/certificate.p12
+          security import $RUNNER_TEMP/certificate.p12 -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+
+          # Set keychain search list
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          # Allow codesign to access the key
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Clean up certificate file
+          rm -f $RUNNER_TEMP/certificate.p12
+
       - name: Build binary
         env:
           CGO_ENABLED: 1
@@ -54,8 +83,33 @@ jobs:
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" \
             dist/Yippity-Clippity.app/Contents/Info.plist || true
 
-          # Create zip for release
+      - name: Sign App Bundle
+        if: ${{ env.APPLE_DEVELOPER_ID != '' }}
+        env:
+          APPLE_DEVELOPER_ID: ${{ secrets.APPLE_DEVELOPER_ID }}
+        run: |
+          # Sign with hardened runtime (required for distribution)
+          codesign --force --deep --sign "$APPLE_DEVELOPER_ID" \
+            --options runtime \
+            --entitlements entitlements/entitlements.plist \
+            dist/Yippity-Clippity.app
+
+          # Verify signature
+          codesign --verify --verbose=2 dist/Yippity-Clippity.app
+          echo "App signed successfully (not notarized - users will need to right-click > Open on first launch)"
+
+      - name: Create Release Archive
+        run: |
+          VERSION=${{ github.ref_name }}
           ditto -c -k --keepParent dist/Yippity-Clippity.app dist/Yippity-Clippity-${VERSION}.zip
+
+      - name: Cleanup Keychain
+        if: always()
+        run: |
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          if [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
