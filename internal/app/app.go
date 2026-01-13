@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"log"
 
+	"github.com/mindmorass/yippity-clippity/internal/backend"
 	"github.com/mindmorass/yippity-clippity/internal/sync"
 	"github.com/mindmorass/yippity-clippity/internal/ui"
 	"github.com/mindmorass/yippity-clippity/internal/update"
@@ -27,8 +29,37 @@ func New(version string) (*App, error) {
 		config = DefaultConfig()
 	}
 
-	// Create sync engine
-	engine := sync.NewEngine(config.SharedLocation)
+	// Create backend based on configuration
+	backendCfg := &backend.Config{
+		Type:             backend.BackendType(config.BackendType),
+		Location:         config.SharedLocation,
+		S3Bucket:         config.S3Bucket,
+		S3Prefix:         config.S3Prefix,
+		S3Region:         config.S3Region,
+		DropboxAppKey:    config.DropboxAppKey,
+		DropboxAppSecret: config.DropboxAppSecret,
+	}
+
+	// Default to local backend if not specified
+	if backendCfg.Type == "" {
+		backendCfg.Type = backend.BackendLocal
+	}
+
+	b, err := backend.New(backendCfg)
+	if err != nil {
+		log.Printf("Warning: failed to create backend: %v, falling back to local", err)
+		b = backend.NewDefault()
+	}
+
+	// Initialize backend
+	ctx := context.Background()
+	if err := b.Init(ctx); err != nil {
+		log.Printf("Warning: failed to initialize backend: %v", err)
+		// For local backend, this might just mean the directory doesn't exist yet
+	}
+
+	// Create sync engine with the backend
+	engine := sync.NewEngineWithBackend(b)
 
 	// Create update checker
 	checker := update.NewChecker(version)
@@ -100,4 +131,19 @@ func (a *App) GetVersion() string {
 // GetUpdateChecker returns the update checker
 func (a *App) GetUpdateChecker() *update.Checker {
 	return a.updateChecker
+}
+
+// GetBackendType returns the current backend type
+func (a *App) GetBackendType() string {
+	return a.config.BackendType
+}
+
+// SetBackendType updates the backend type (requires restart to take effect)
+func (a *App) SetBackendType(backendType string) error {
+	a.config.BackendType = backendType
+	if err := SaveConfig(a.config); err != nil {
+		log.Printf("Warning: failed to save config: %v", err)
+		return err
+	}
+	return nil
 }

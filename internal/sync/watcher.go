@@ -1,12 +1,20 @@
 package sync
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
 
+	"github.com/mindmorass/yippity-clippity/internal/backend"
 	"github.com/mindmorass/yippity-clippity/internal/clipboard"
-	"github.com/mindmorass/yippity-clippity/internal/storage"
+)
+
+// Adaptive polling constants
+const (
+	MinPollInterval = 50 * time.Millisecond  // During active use
+	MaxPollInterval = 500 * time.Millisecond // During idle
+	ActivityWindow  = 30 * time.Second       // Time window to consider "active"
 )
 
 // RemoteChangeHandler is called when remote clipboard changes
@@ -14,31 +22,38 @@ type RemoteChangeHandler func(*clipboard.Content)
 
 // Watcher monitors the shared location for changes
 // Uses polling because fsnotify doesn't work on network filesystems
+// Implements adaptive polling: faster during active use, slower when idle
 type Watcher struct {
-	storage      *storage.Storage
+	backend      backend.Backend
 	interval     time.Duration
 	lastModTime  time.Time
 	lastChecksum string
 	onChange     RemoteChangeHandler
 	stopChan     chan struct{}
 	running      bool
-	mu           sync.Mutex
+
+	// Adaptive polling state
+	lastActivity    time.Time
+	currentInterval time.Duration
+
+	mu sync.Mutex
 }
 
 // NewWatcher creates a new remote watcher
-func NewWatcher(stor *storage.Storage, interval time.Duration) *Watcher {
+func NewWatcher(b backend.Backend, interval time.Duration) *Watcher {
 	return &Watcher{
-		storage:  stor,
-		interval: interval,
-		stopChan: make(chan struct{}),
+		backend:         b,
+		interval:        interval,
+		currentInterval: interval,
+		stopChan:        make(chan struct{}),
 	}
 }
 
-// SetStorage updates the storage instance
-func (w *Watcher) SetStorage(stor *storage.Storage) {
+// SetBackend updates the backend instance
+func (w *Watcher) SetBackend(b backend.Backend) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.storage = stor
+	w.backend = b
 }
 
 // OnChange sets the handler for remote changes
@@ -80,7 +95,45 @@ func (w *Watcher) IsRunning() bool {
 	return w.running
 }
 
+// NotifyActivity signals that clipboard activity occurred
+// This triggers faster polling for better responsiveness
+func (w *Watcher) NotifyActivity() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.lastActivity = time.Now()
+}
+
+// getAdaptiveInterval calculates the current polling interval based on activity
+func (w *Watcher) getAdaptiveInterval() time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	timeSinceActivity := time.Since(w.lastActivity)
+
+	if timeSinceActivity < ActivityWindow {
+		// Active: use fast polling
+		w.currentInterval = MinPollInterval
+	} else {
+		// Idle: gradually increase to max interval
+		// Linear interpolation from min to max over another activity window
+		idleTime := timeSinceActivity - ActivityWindow
+		if idleTime >= ActivityWindow {
+			w.currentInterval = MaxPollInterval
+		} else {
+			ratio := float64(idleTime) / float64(ActivityWindow)
+			w.currentInterval = MinPollInterval + time.Duration(ratio*float64(MaxPollInterval-MinPollInterval))
+		}
+	}
+
+	return w.currentInterval
+}
+
 func (w *Watcher) run() {
+	// Start with the configured interval
+	w.mu.Lock()
+	w.currentInterval = w.interval
+	w.mu.Unlock()
+
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
@@ -91,6 +144,10 @@ func (w *Watcher) run() {
 		select {
 		case <-ticker.C:
 			w.checkForChanges()
+
+			// Adjust ticker interval based on activity
+			newInterval := w.getAdaptiveInterval()
+			ticker.Reset(newInterval)
 		case <-w.stopChan:
 			return
 		}
@@ -99,16 +156,18 @@ func (w *Watcher) run() {
 
 func (w *Watcher) checkForChanges() {
 	w.mu.Lock()
-	stor := w.storage
+	b := w.backend
 	handler := w.onChange
 	w.mu.Unlock()
 
-	if stor == nil || stor.GetBasePath() == "" {
+	if b == nil || b.GetLocation() == "" {
 		return
 	}
 
+	ctx := context.Background()
+
 	// Check if file exists and has been modified
-	modTime, err := stor.GetModTime()
+	modTime, err := b.GetModTime(ctx)
 	if err != nil {
 		return // File doesn't exist yet
 	}
@@ -122,7 +181,7 @@ func (w *Watcher) checkForChanges() {
 	w.mu.Unlock()
 
 	// Read the content
-	content, err := stor.Read()
+	content, err := b.Read(ctx)
 	if err != nil {
 		log.Printf("Failed to read remote clipboard: %v", err)
 		return

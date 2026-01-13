@@ -21,6 +21,8 @@ type App interface {
 	GetSyncEngine() *sync.Engine
 	SetSharedLocation(path string) error
 	GetSharedLocation() string
+	GetBackendType() string
+	SetBackendType(backendType string) error
 	GetVersion() string
 	GetUpdateChecker() *update.Checker
 	Quit()
@@ -35,6 +37,10 @@ type Menubar struct {
 	mResume        *systray.MenuItem
 	mLocations     *systray.MenuItem
 	mCurrentLoc    *systray.MenuItem
+	mBackend       *systray.MenuItem
+	mBackendLocal  *systray.MenuItem
+	mBackendS3     *systray.MenuItem
+	mBackendDropbox *systray.MenuItem
 	mUpdate        *systray.MenuItem
 	mCheckUpdate   *systray.MenuItem
 	mVersion       *systray.MenuItem
@@ -137,6 +143,13 @@ func (m *Menubar) onReady() {
 	m.mLocations.AddSubMenuItem("", "")
 	mChooseFolder := m.mLocations.AddSubMenuItem("Choose Folder...", "")
 
+	// Backend submenu
+	m.mBackend = systray.AddMenuItem("Backend", "Select storage backend")
+	m.mBackendLocal = m.mBackend.AddSubMenuItem("Local (File System)", "Use local folder for sync")
+	m.mBackendS3 = m.mBackend.AddSubMenuItem("Amazon S3", "Use S3 bucket for sync")
+	m.mBackendDropbox = m.mBackend.AddSubMenuItem("Dropbox", "Use Dropbox API for sync")
+	m.updateBackendSelection()
+
 	systray.AddSeparator()
 
 	// Sync controls
@@ -199,6 +212,21 @@ func (m *Menubar) onReady() {
 				m.mResume.Hide()
 				m.mPause.Show()
 
+			case <-m.mBackendLocal.ClickedCh:
+				if err := m.app.SetBackendType("local"); err == nil {
+					m.updateBackendSelection()
+				}
+
+			case <-m.mBackendS3.ClickedCh:
+				if err := m.app.SetBackendType("s3"); err == nil {
+					m.updateBackendSelection()
+				}
+
+			case <-m.mBackendDropbox.ClickedCh:
+				if err := m.app.SetBackendType("dropbox"); err == nil {
+					m.updateBackendSelection()
+				}
+
 			case <-m.mCheckUpdate.ClickedCh:
 				m.checkForUpdates()
 
@@ -246,6 +274,29 @@ func (m *Menubar) updateLocation() {
 		m.mCurrentLoc.SetTitle("Not configured")
 	} else {
 		m.mCurrentLoc.SetTitle("✓ " + loc)
+	}
+}
+
+func (m *Menubar) updateBackendSelection() {
+	backendType := m.app.GetBackendType()
+	if backendType == "" {
+		backendType = "local" // Default
+	}
+
+	// Update menu item titles with checkmarks
+	switch backendType {
+	case "local":
+		m.mBackendLocal.SetTitle("✓ Local (File System)")
+		m.mBackendS3.SetTitle("Amazon S3")
+		m.mBackendDropbox.SetTitle("Dropbox")
+	case "s3":
+		m.mBackendLocal.SetTitle("Local (File System)")
+		m.mBackendS3.SetTitle("✓ Amazon S3")
+		m.mBackendDropbox.SetTitle("Dropbox")
+	case "dropbox":
+		m.mBackendLocal.SetTitle("Local (File System)")
+		m.mBackendS3.SetTitle("Amazon S3")
+		m.mBackendDropbox.SetTitle("✓ Dropbox")
 	}
 }
 

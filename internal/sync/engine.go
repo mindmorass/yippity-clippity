@@ -1,13 +1,14 @@
 package sync
 
 import (
+	"context"
 	"log"
 	"os"
 	"sync"
 	"time"
 
+	"github.com/mindmorass/yippity-clippity/internal/backend"
 	"github.com/mindmorass/yippity-clippity/internal/clipboard"
-	"github.com/mindmorass/yippity-clippity/internal/storage"
 )
 
 // StatusHandler is called when sync status changes
@@ -40,7 +41,7 @@ func (s Status) String() string {
 
 // Engine coordinates clipboard synchronization
 type Engine struct {
-	storage          *storage.Storage
+	backend          backend.Backend
 	clipboardMonitor *clipboard.Monitor
 	remoteWatcher    *Watcher
 
@@ -58,14 +59,18 @@ type Engine struct {
 	mu      sync.Mutex
 }
 
-// NewEngine creates a new sync engine
+// NewEngine creates a new sync engine with a local backend
 func NewEngine(basePath string) *Engine {
-	stor := storage.New(basePath)
+	b := backend.NewLocalBackend(basePath)
+	return NewEngineWithBackend(b)
+}
 
+// NewEngineWithBackend creates a new sync engine with a custom backend
+func NewEngineWithBackend(b backend.Backend) *Engine {
 	e := &Engine{
-		storage:          stor,
+		backend:          b,
 		clipboardMonitor: clipboard.NewMonitor(100 * time.Millisecond),
-		remoteWatcher:    NewWatcher(stor, 500*time.Millisecond),
+		remoteWatcher:    NewWatcher(b, 500*time.Millisecond),
 		status:           StatusIdle,
 	}
 
@@ -88,20 +93,20 @@ func (e *Engine) SetSharedLocation(path string) error {
 	}
 
 	e.mu.Lock()
-	if err := e.storage.SetBasePath(path); err != nil {
+	if err := e.backend.SetLocation(path); err != nil {
 		e.mu.Unlock()
 		return err
 	}
-	e.remoteWatcher.SetStorage(e.storage)
+	e.remoteWatcher.SetBackend(e.backend)
 	e.mu.Unlock()
 
-	// Create directory if needed
-	if err := e.storage.EnsureDir(); err != nil {
-		return err
+	// Initialize backend (creates directory, etc.)
+	if path != "" {
+		ctx := context.Background()
+		if err := e.backend.Init(ctx); err != nil {
+			return err
+		}
 	}
-
-	// Clean up any stale locks
-	e.storage.CleanStaleLocks()
 
 	// Restart watcher with new location
 	if wasRunning && path != "" {
@@ -114,7 +119,7 @@ func (e *Engine) SetSharedLocation(path string) error {
 
 // GetSharedLocation returns the current sync location
 func (e *Engine) GetSharedLocation() string {
-	return e.storage.GetBasePath()
+	return e.backend.GetLocation()
 }
 
 // OnStatusChange sets the status change handler
@@ -139,7 +144,7 @@ func (e *Engine) Start() error {
 	e.clipboardMonitor.Start()
 
 	// Start remote watcher if location is set
-	if e.storage.GetBasePath() != "" {
+	if e.backend.GetLocation() != "" {
 		e.remoteWatcher.Start()
 	}
 
@@ -244,7 +249,8 @@ func (e *Engine) onLocalClipboardChange(content *clipboard.Content) {
 	hostname, _ := os.Hostname()
 	log.Printf("[%s] Local clipboard changed, writing to shared location", hostname)
 
-	if err := e.storage.Write(content); err != nil {
+	ctx := context.Background()
+	if err := e.backend.Write(ctx, content); err != nil {
 		log.Printf("Failed to write clipboard: %v", err)
 		e.mu.Lock()
 		e.lastError = err
@@ -252,6 +258,9 @@ func (e *Engine) onLocalClipboardChange(content *clipboard.Content) {
 		e.setStatus(StatusError)
 		return
 	}
+
+	// Notify watcher of activity for adaptive polling
+	e.remoteWatcher.NotifyActivity()
 
 	e.mu.Lock()
 	e.lastSyncTime = time.Now()
@@ -299,6 +308,9 @@ func (e *Engine) onRemoteChange(content *clipboard.Content) {
 
 	// Update monitor's checksum to prevent echo
 	e.clipboardMonitor.SetLastChecksum(content.Checksum)
+
+	// Notify watcher of activity for adaptive polling
+	e.remoteWatcher.NotifyActivity()
 
 	e.mu.Lock()
 	e.lastSyncTime = time.Now()

@@ -19,13 +19,31 @@ const (
 type Config struct {
 	SharedLocation string `mapstructure:"shared_location"`
 	LaunchAtLogin  bool   `mapstructure:"launch_at_login"`
+
+	// Backend configuration
+	BackendType string `mapstructure:"backend_type"` // "local", "s3", or "dropbox"
+
+	// S3-specific settings
+	S3Bucket string `mapstructure:"s3_bucket"`
+	S3Prefix string `mapstructure:"s3_prefix"`
+	S3Region string `mapstructure:"s3_region"`
+
+	// Dropbox-specific settings (app credentials stored via environment or keychain)
+	DropboxAppKey    string `mapstructure:"dropbox_app_key"`
+	DropboxAppSecret string `mapstructure:"dropbox_app_secret"`
 }
 
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		SharedLocation: "",
-		LaunchAtLogin:  false,
+		SharedLocation:   "",
+		LaunchAtLogin:    false,
+		BackendType:      "local",
+		S3Bucket:         "",
+		S3Prefix:         "",
+		S3Region:         "",
+		DropboxAppKey:    "",
+		DropboxAppSecret: "",
 	}
 }
 
@@ -45,6 +63,12 @@ func LoadConfig() (*Config, error) {
 	// Set defaults
 	viper.SetDefault("shared_location", "")
 	viper.SetDefault("launch_at_login", false)
+	viper.SetDefault("backend_type", "local")
+	viper.SetDefault("s3_bucket", "")
+	viper.SetDefault("s3_prefix", "")
+	viper.SetDefault("s3_region", "")
+	viper.SetDefault("dropbox_app_key", "")
+	viper.SetDefault("dropbox_app_secret", "")
 
 	// Try to read config file
 	if err := viper.ReadInConfig(); err != nil {
@@ -74,6 +98,12 @@ func SaveConfig(config *Config) error {
 
 	viper.Set("shared_location", config.SharedLocation)
 	viper.Set("launch_at_login", config.LaunchAtLogin)
+	viper.Set("backend_type", config.BackendType)
+	viper.Set("s3_bucket", config.S3Bucket)
+	viper.Set("s3_prefix", config.S3Prefix)
+	viper.Set("s3_region", config.S3Region)
+	viper.Set("dropbox_app_key", config.DropboxAppKey)
+	viper.Set("dropbox_app_secret", config.DropboxAppSecret)
 
 	configPath := filepath.Join(configDir, ConfigFileName+".yaml")
 	return viper.WriteConfigAs(configPath)
