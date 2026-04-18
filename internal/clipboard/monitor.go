@@ -1,3 +1,5 @@
+//go:build darwin
+
 package clipboard
 
 import (
@@ -16,6 +18,7 @@ type Monitor struct {
 	lastChecksum    string
 	onChange        ChangeHandler
 	stopChan        chan struct{}
+	doneChan        chan struct{} // closed by the goroutine when it exits
 	running         bool
 	mu              sync.Mutex
 }
@@ -45,20 +48,28 @@ func (m *Monitor) Start() {
 	m.running = true
 	m.lastChangeCount = GetChangeCount()
 	m.stopChan = make(chan struct{})
+	m.doneChan = make(chan struct{})
 	m.mu.Unlock()
 
-	go m.run()
+	go func() {
+		defer close(m.doneChan)
+		m.run()
+	}()
 }
 
-// Stop stops the clipboard monitor
+// Stop stops the clipboard monitor and waits for the polling goroutine to exit.
 func (m *Monitor) Stop() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.running {
+		m.mu.Unlock()
 		return
 	}
 	m.running = false
 	close(m.stopChan)
+	done := m.doneChan
+	m.mu.Unlock()
+
+	<-done // wait for the goroutine to fully exit before returning
 }
 
 // IsRunning returns true if the monitor is active

@@ -29,6 +29,12 @@ func New(version string) (*App, error) {
 		config = DefaultConfig()
 	}
 
+	// Validate required fields for the chosen backend so errors are caught at
+	// startup rather than silently falling back at first sync.
+	if err := config.Validate(); err != nil {
+		log.Printf("Warning: config validation failed: %v", err)
+	}
+
 	// Create backend based on configuration
 	backendCfg := &backend.Config{
 		Type:             backend.BackendType(config.BackendType),

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -45,6 +46,30 @@ func DefaultConfig() *Config {
 		DropboxAppKey:    "",
 		DropboxAppSecret: "",
 	}
+}
+
+// Validate checks that required fields are present for the chosen backend.
+// Call this immediately after loading config so misconfiguration is surfaced
+// at startup rather than at first use.
+func (c *Config) Validate() error {
+	switch c.BackendType {
+	case "s3":
+		if c.S3Bucket == "" {
+			return errors.New("s3_bucket is required when backend_type is \"s3\"")
+		}
+	case "dropbox":
+		if c.DropboxAppKey == "" {
+			return errors.New("dropbox_app_key is required when backend_type is \"dropbox\"")
+		}
+		if c.DropboxAppSecret == "" {
+			return errors.New("dropbox_app_secret is required when backend_type is \"dropbox\"")
+		}
+	case "local", "":
+		// no additional required fields
+	default:
+		return errors.New("unknown backend_type: " + c.BackendType)
+	}
+	return nil
 }
 
 // LoadConfig loads configuration from file

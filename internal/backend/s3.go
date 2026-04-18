@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -29,6 +30,7 @@ type S3Backend struct {
 	region   string
 	client   *s3.Client
 	lastETag string
+	mu       sync.Mutex // protects lastETag and client
 }
 
 // NewS3Backend creates a new S3 backend
@@ -130,7 +132,11 @@ func (b *S3Backend) Close() error {
 
 // Write stores clipboard content to S3 with optimistic locking
 func (b *S3Backend) Write(ctx context.Context, content *clipboard.Content) error {
-	if b.client == nil {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
 		return ErrNotConfigured
 	}
 
@@ -147,22 +153,16 @@ func (b *S3Backend) Write(ctx context.Context, content *clipboard.Content) error
 		ContentType: aws.String("application/octet-stream"),
 	}
 
-	// Use If-None-Match for optimistic locking when we have a known ETag
-	// This prevents race conditions where another client wrote in between
-	if b.lastETag != "" {
-		// Note: S3 doesn't support If-None-Match for PutObject
-		// We use conditional writes through the expected ETag check
-		// after reading to detect conflicts
-	}
-
-	result, err := b.client.PutObject(ctx, input)
+	result, err := client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("S3 put failed: %w", err)
 	}
 
 	// Store the new ETag for future conflict detection
 	if result.ETag != nil {
+		b.mu.Lock()
 		b.lastETag = strings.Trim(*result.ETag, "\"")
+		b.mu.Unlock()
 	}
 
 	return nil
@@ -170,11 +170,15 @@ func (b *S3Backend) Write(ctx context.Context, content *clipboard.Content) error
 
 // Read retrieves clipboard content from S3
 func (b *S3Backend) Read(ctx context.Context) (*clipboard.Content, error) {
-	if b.client == nil {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
 		return nil, ErrNotConfigured
 	}
 
-	result, err := b.client.GetObject(ctx, &s3.GetObjectInput{
+	result, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.objectKey()),
 	})
@@ -194,7 +198,9 @@ func (b *S3Backend) Read(ctx context.Context) (*clipboard.Content, error) {
 
 	// Update ETag
 	if result.ETag != nil {
+		b.mu.Lock()
 		b.lastETag = strings.Trim(*result.ETag, "\"")
+		b.mu.Unlock()
 	}
 
 	data, err := io.ReadAll(result.Body)
@@ -212,11 +218,15 @@ func (b *S3Backend) Read(ctx context.Context) (*clipboard.Content, error) {
 
 // GetModTime returns the last modification time of the S3 object
 func (b *S3Backend) GetModTime(ctx context.Context) (time.Time, error) {
-	if b.client == nil {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
 		return time.Time{}, ErrNotConfigured
 	}
 
-	result, err := b.client.HeadObject(ctx, &s3.HeadObjectInput{
+	result, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.objectKey()),
 	})
@@ -226,7 +236,9 @@ func (b *S3Backend) GetModTime(ctx context.Context) (time.Time, error) {
 
 	// Update ETag from HEAD request
 	if result.ETag != nil {
+		b.mu.Lock()
 		b.lastETag = strings.Trim(*result.ETag, "\"")
+		b.mu.Unlock()
 	}
 
 	if result.LastModified != nil {
@@ -239,11 +251,15 @@ func (b *S3Backend) GetModTime(ctx context.Context) (time.Time, error) {
 // GetChecksum returns the ETag which serves as a checksum for S3 objects
 // This is more efficient than a full Read() operation
 func (b *S3Backend) GetChecksum(ctx context.Context) (string, error) {
-	if b.client == nil {
+	b.mu.Lock()
+	client := b.client
+	b.mu.Unlock()
+
+	if client == nil {
 		return "", ErrNotConfigured
 	}
 
-	result, err := b.client.HeadObject(ctx, &s3.HeadObjectInput{
+	result, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String(b.bucket),
 		Key:    aws.String(b.objectKey()),
 	})
@@ -257,7 +273,9 @@ func (b *S3Backend) GetChecksum(ctx context.Context) (string, error) {
 
 	if result.ETag != nil {
 		etag := strings.Trim(*result.ETag, "\"")
+		b.mu.Lock()
 		b.lastETag = etag
+		b.mu.Unlock()
 		return etag, nil
 	}
 

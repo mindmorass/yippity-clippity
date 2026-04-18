@@ -10,6 +10,10 @@ import (
 	"github.com/mindmorass/yippity-clippity/internal/clipboard"
 )
 
+// backendCallTimeout is the per-call deadline for backend operations inside the watcher.
+// It ensures the polling goroutine doesn't hang indefinitely on a slow remote backend.
+const backendCallTimeout = 15 * time.Second
+
 // Adaptive polling constants
 const (
 	MinPollInterval = 50 * time.Millisecond  // During active use
@@ -30,6 +34,7 @@ type Watcher struct {
 	lastChecksum string
 	onChange     RemoteChangeHandler
 	stopChan     chan struct{}
+	doneChan     chan struct{} // closed by the goroutine when it exits
 	running      bool
 
 	// Adaptive polling state
@@ -72,20 +77,28 @@ func (w *Watcher) Start() {
 	}
 	w.running = true
 	w.stopChan = make(chan struct{})
+	w.doneChan = make(chan struct{})
 	w.mu.Unlock()
 
-	go w.run()
+	go func() {
+		defer close(w.doneChan)
+		w.run()
+	}()
 }
 
-// Stop stops the watcher
+// Stop stops the watcher and waits for the polling goroutine to exit.
 func (w *Watcher) Stop() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if !w.running {
+		w.mu.Unlock()
 		return
 	}
 	w.running = false
 	close(w.stopChan)
+	done := w.doneChan
+	w.mu.Unlock()
+
+	<-done // wait for the goroutine to fully exit before returning
 }
 
 // IsRunning returns true if watcher is active
@@ -164,7 +177,8 @@ func (w *Watcher) checkForChanges() {
 		return
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), backendCallTimeout)
+	defer cancel()
 
 	// Check if file exists and has been modified
 	modTime, err := b.GetModTime(ctx)

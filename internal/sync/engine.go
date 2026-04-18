@@ -11,6 +11,19 @@ import (
 	"github.com/mindmorass/yippity-clippity/internal/clipboard"
 )
 
+// MaxSyncPayloadBytes is the maximum clipboard payload that the engine will
+// attempt to sync.  Payloads larger than this are silently dropped with a log
+// message.  50 MB is a reasonable ceiling for a clipboard sync tool; most
+// backends impose their own limits well below this value.
+const MaxSyncPayloadBytes int64 = 50 * 1024 * 1024
+
+// writeRetryAttempts is the number of times the engine retries a failed
+// backend Write before giving up and setting StatusError.
+const writeRetryAttempts = 3
+
+// writeRetryBase is the initial back-off delay between write retries.
+const writeRetryBase = 200 * time.Millisecond
+
 // StatusHandler is called when sync status changes
 type StatusHandler func(status Status)
 
@@ -245,15 +258,44 @@ func (e *Engine) onLocalClipboardChange(content *clipboard.Content) {
 	e.lastLocalContent = content
 	e.mu.Unlock()
 
-	// Write to shared location
+	// Enforce pre-publish size limit to avoid silent failures or excessive
+	// network usage on backends with strict size constraints.
+	if content.Size > MaxSyncPayloadBytes {
+		hostname, _ := os.Hostname()
+		log.Printf("[%s] Clipboard payload too large to sync (%d bytes, limit %d bytes); skipping",
+			hostname, content.Size, MaxSyncPayloadBytes)
+		return
+	}
+
+	// Write to shared location with exponential back-off retries so that
+	// transient network hiccups (S3 throttle, Dropbox rate-limit, …) do not
+	// immediately surface as a persistent error to the user.
 	hostname, _ := os.Hostname()
 	log.Printf("[%s] Local clipboard changed, writing to shared location", hostname)
 
-	ctx := context.Background()
-	if err := e.backend.Write(ctx, content); err != nil {
-		log.Printf("Failed to write clipboard: %v", err)
+	var writeErr error
+	for attempt := 0; attempt < writeRetryAttempts; attempt++ {
+		if attempt > 0 {
+			backoff := writeRetryBase * time.Duration(1<<uint(attempt-1))
+			log.Printf("[%s] Retrying clipboard write (attempt %d/%d) after %s: %v",
+				hostname, attempt+1, writeRetryAttempts, backoff, writeErr)
+			time.Sleep(backoff)
+		}
+
+		ctx := context.Background()
+		if err := e.backend.Write(ctx, content); err != nil {
+			writeErr = err
+			continue
+		}
+		writeErr = nil
+		break
+	}
+
+	if writeErr != nil {
+		log.Printf("[%s] Failed to write clipboard after %d attempts: %v",
+			hostname, writeRetryAttempts, writeErr)
 		e.mu.Lock()
-		e.lastError = err
+		e.lastError = writeErr
 		e.mu.Unlock()
 		e.setStatus(StatusError)
 		return

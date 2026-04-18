@@ -9,16 +9,17 @@ import (
 	"log"
 	"os/exec"
 	"runtime"
+	"sync"
 	"time"
 
 	"fyne.io/systray"
-	"github.com/mindmorass/yippity-clippity/internal/sync"
+	gosync "github.com/mindmorass/yippity-clippity/internal/sync"
 	"github.com/mindmorass/yippity-clippity/internal/update"
 )
 
 // App interface for the main application
 type App interface {
-	GetSyncEngine() *sync.Engine
+	GetSyncEngine() *gosync.Engine
 	SetSharedLocation(path string) error
 	GetSharedLocation() string
 	GetBackendType() string
@@ -30,22 +31,23 @@ type App interface {
 
 // Menubar manages the system tray
 type Menubar struct {
-	app            App
-	mStatus        *systray.MenuItem
-	mLastSync      *systray.MenuItem
-	mPause         *systray.MenuItem
-	mResume        *systray.MenuItem
-	mLocations     *systray.MenuItem
-	mCurrentLoc    *systray.MenuItem
-	mBackend       *systray.MenuItem
-	mBackendLocal  *systray.MenuItem
-	mBackendS3     *systray.MenuItem
+	app             App
+	mStatus         *systray.MenuItem
+	mLastSync       *systray.MenuItem
+	mPause          *systray.MenuItem
+	mResume         *systray.MenuItem
+	mLocations      *systray.MenuItem
+	mCurrentLoc     *systray.MenuItem
+	mBackend        *systray.MenuItem
+	mBackendLocal   *systray.MenuItem
+	mBackendS3      *systray.MenuItem
 	mBackendDropbox *systray.MenuItem
-	mUpdate        *systray.MenuItem
-	mCheckUpdate   *systray.MenuItem
-	mVersion       *systray.MenuItem
-	updateInfo     *update.UpdateInfo
-	quitChan       chan struct{}
+	mUpdate         *systray.MenuItem
+	mCheckUpdate    *systray.MenuItem
+	mVersion        *systray.MenuItem
+	updateInfo      *update.UpdateInfo
+	updateMu        sync.Mutex // protects updateInfo
+	quitChan        chan struct{}
 }
 
 // createClipboardIcon generates a line-style clipboard icon for the menubar
@@ -174,10 +176,10 @@ func (m *Menubar) onReady() {
 
 	// Update initial state
 	m.updateLocation()
-	m.updateStatus(sync.StatusSyncing)
+	m.updateStatus(gosync.StatusSyncing)
 
 	// Set up status change handler
-	m.app.GetSyncEngine().OnStatusChange(func(status sync.Status) {
+	m.app.GetSyncEngine().OnStatusChange(func(status gosync.Status) {
 		m.updateStatus(status)
 	})
 
@@ -232,8 +234,14 @@ func (m *Menubar) onReady() {
 
 			case <-m.mUpdate.ClickedCh:
 				// Open release page in browser
-				if m.updateInfo != nil && m.updateInfo.ReleaseURL != "" {
-					openBrowser(m.updateInfo.ReleaseURL)
+				m.updateMu.Lock()
+				releaseURL := ""
+				if m.updateInfo != nil {
+					releaseURL = m.updateInfo.ReleaseURL
+				}
+				m.updateMu.Unlock()
+				if releaseURL != "" {
+					openBrowser(releaseURL)
 				}
 
 			case <-mAbout.ClickedCh:
@@ -255,13 +263,13 @@ func (m *Menubar) onExit() {
 	close(m.quitChan)
 }
 
-func (m *Menubar) updateStatus(status sync.Status) {
+func (m *Menubar) updateStatus(status gosync.Status) {
 	switch status {
-	case sync.StatusSyncing:
+	case gosync.StatusSyncing:
 		m.mStatus.SetTitle("Status: Syncing ✓")
-	case sync.StatusPaused:
+	case gosync.StatusPaused:
 		m.mStatus.SetTitle("Status: Paused ⏸")
-	case sync.StatusError:
+	case gosync.StatusError:
 		m.mStatus.SetTitle("Status: Error ⚠")
 	default:
 		m.mStatus.SetTitle("Status: " + status.String())
@@ -344,14 +352,19 @@ func (m *Menubar) checkForUpdates() {
 		// Hide the error after a few seconds
 		go func() {
 			time.Sleep(3 * time.Second)
-			if m.updateInfo == nil || !m.updateInfo.Available {
+			m.updateMu.Lock()
+			available := m.updateInfo != nil && m.updateInfo.Available
+			m.updateMu.Unlock()
+			if !available {
 				m.mUpdate.Hide()
 			}
 		}()
 		return
 	}
 
+	m.updateMu.Lock()
 	m.updateInfo = info
+	m.updateMu.Unlock()
 
 	if info.Available {
 		m.mUpdate.SetTitle(fmt.Sprintf("Update Available: %s", info.LatestVersion))
@@ -363,7 +376,10 @@ func (m *Menubar) checkForUpdates() {
 		m.mUpdate.Show()
 		go func() {
 			time.Sleep(3 * time.Second)
-			if m.updateInfo != nil && !m.updateInfo.Available {
+			m.updateMu.Lock()
+			available := m.updateInfo != nil && m.updateInfo.Available
+			m.updateMu.Unlock()
+			if !available {
 				m.mUpdate.Hide()
 			}
 		}()

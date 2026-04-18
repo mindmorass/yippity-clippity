@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -43,6 +44,7 @@ type Checker struct {
 	lastCheck      time.Time
 	lastResult     *UpdateInfo
 	httpClient     *http.Client
+	mu             sync.Mutex // protects lastCheck and lastResult
 }
 
 // NewChecker creates a new update checker
@@ -110,22 +112,30 @@ func (c *Checker) Check() (*UpdateInfo, error) {
 		PublishedAt:    release.PublishedAt,
 	}
 
+	c.mu.Lock()
 	c.lastCheck = time.Now()
 	c.lastResult = info
+	c.mu.Unlock()
 
 	return info, nil
 }
 
 // CheckIfNeeded checks for updates if enough time has passed
 func (c *Checker) CheckIfNeeded() (*UpdateInfo, error) {
-	if time.Since(c.lastCheck) < CheckInterval && c.lastResult != nil {
-		return c.lastResult, nil
+	c.mu.Lock()
+	recent := time.Since(c.lastCheck) < CheckInterval && c.lastResult != nil
+	cached := c.lastResult
+	c.mu.Unlock()
+	if recent {
+		return cached, nil
 	}
 	return c.Check()
 }
 
 // GetLastResult returns the last check result without making a request
 func (c *Checker) GetLastResult() *UpdateInfo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.lastResult
 }
 

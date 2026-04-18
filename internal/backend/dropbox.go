@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mindmorass/yippity-clippity/internal/clipboard"
@@ -40,6 +41,7 @@ type DropboxBackend struct {
 	lastHash     string
 	httpClient   *http.Client
 	oauthConfig  *oauth2.Config
+	mu           sync.Mutex // protects lastRev, lastHash, accessToken, refreshToken, tokenExpiry
 }
 
 // NewDropboxBackend creates a new Dropbox backend
@@ -111,7 +113,12 @@ func (b *DropboxBackend) Close() error {
 
 // Write stores clipboard content to Dropbox
 func (b *DropboxBackend) Write(ctx context.Context, content *clipboard.Content) error {
-	if b.accessToken == "" {
+	b.mu.Lock()
+	token := b.accessToken
+	lastRev := b.lastRev
+	b.mu.Unlock()
+
+	if token == "" {
 		return ErrNotConfigured
 	}
 
@@ -130,10 +137,10 @@ func (b *DropboxBackend) Write(ctx context.Context, content *clipboard.Content) 
 	}
 
 	// Use update mode with rev for optimistic locking if we have a rev
-	if b.lastRev != "" {
+	if lastRev != "" {
 		args["mode"] = map[string]string{
 			".tag":   "update",
-			"update": b.lastRev,
+			"update": lastRev,
 		}
 	}
 
@@ -149,7 +156,7 @@ func (b *DropboxBackend) Write(ctx context.Context, content *clipboard.Content) 
 		return err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+b.accessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Dropbox-API-Arg", string(argsJSON))
 
@@ -178,15 +185,21 @@ func (b *DropboxBackend) Write(ctx context.Context, content *clipboard.Content) 
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	b.mu.Lock()
 	b.lastRev = uploadResp.Rev
 	b.lastHash = uploadResp.ContentHash
+	b.mu.Unlock()
 
 	return nil
 }
 
 // Read retrieves clipboard content from Dropbox
 func (b *DropboxBackend) Read(ctx context.Context) (*clipboard.Content, error) {
-	if b.accessToken == "" {
+	b.mu.Lock()
+	token := b.accessToken
+	b.mu.Unlock()
+
+	if token == "" {
 		return nil, ErrNotConfigured
 	}
 
@@ -202,7 +215,7 @@ func (b *DropboxBackend) Read(ctx context.Context) (*clipboard.Content, error) {
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+b.accessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Dropbox-API-Arg", string(argsJSON))
 
 	resp, err := b.httpClient.Do(req)
@@ -229,8 +242,10 @@ func (b *DropboxBackend) Read(ctx context.Context) (*clipboard.Content, error) {
 			ContentHash string `json:"content_hash"`
 		}
 		if json.Unmarshal([]byte(apiResult), &meta) == nil {
+			b.mu.Lock()
 			b.lastRev = meta.Rev
 			b.lastHash = meta.ContentHash
+			b.mu.Unlock()
 		}
 	}
 
@@ -264,8 +279,10 @@ func (b *DropboxBackend) GetChecksum(ctx context.Context) (string, error) {
 		return "", err
 	}
 
+	b.mu.Lock()
 	b.lastRev = meta.Rev
 	b.lastHash = meta.ContentHash
+	b.mu.Unlock()
 
 	return meta.ContentHash, nil
 }
@@ -286,7 +303,11 @@ type dropboxMetadata struct {
 
 // getMetadata retrieves file metadata from Dropbox
 func (b *DropboxBackend) getMetadata(ctx context.Context) (*dropboxMetadata, error) {
-	if b.accessToken == "" {
+	b.mu.Lock()
+	token := b.accessToken
+	b.mu.Unlock()
+
+	if token == "" {
 		return nil, ErrNotConfigured
 	}
 
@@ -302,7 +323,7 @@ func (b *DropboxBackend) getMetadata(ctx context.Context) (*dropboxMetadata, err
 		return nil, err
 	}
 
-	req.Header.Set("Authorization", "Bearer "+b.accessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := b.httpClient.Do(req)
